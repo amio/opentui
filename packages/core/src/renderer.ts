@@ -35,7 +35,7 @@ import {
   parsePixelResolution,
 } from "./lib/terminal-capability-detection.js"
 import { type Clock, type TimerHandle, SystemClock } from "./lib/clock.js"
-import { StdinParser, type StdinEvent } from "./lib/stdin-parser.js"
+import { StdinParser, type StdinEvent, type StdinParserProtocolContext } from "./lib/stdin-parser.js"
 
 registerEnvVar({
   name: "OTUI_DUMP_CAPTURES",
@@ -53,7 +53,7 @@ registerEnvVar({
 
 registerEnvVar({
   name: "OTUI_USE_ALTERNATE_SCREEN",
-  description: "Whether to use the console. Will not capture console output if set to false.",
+  description: "Use the terminal alternate screen buffer.",
   type: "boolean",
   default: true,
 })
@@ -133,6 +133,8 @@ const DEFAULT_FORWARDED_ENV_KEYS = [
   "OPENTUI_FORCE_EXPLICIT_WIDTH",
   "WT_SESSION",
   "STY",
+  "WSL_DISTRO_NAME",
+  "WSL_INTEROP",
 ] as const
 
 // Kitty keyboard protocol flags
@@ -323,8 +325,15 @@ export async function createCliRenderer(config: CliRendererConfig = {}): Promise
 }
 
 export enum CliRenderEvents {
+  RESIZE = "resize",
+  FOCUS = "focus",
+  BLUR = "blur",
+  THEME_MODE = "theme_mode",
+  CAPABILITIES = "capabilities",
+  SELECTION = "selection",
   DEBUG_OVERLAY_TOGGLE = "debugOverlay:toggle",
   DESTROY = "destroy",
+  MEMORY_SNAPSHOT = "memory:snapshot",
 }
 
 export enum RendererControlState {
@@ -466,6 +475,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _paletteDetectionPromise: Promise<TerminalColors> | null = null
   private _onDestroy?: () => void
   private _themeMode: ThemeMode | null = null
+  private _terminalFocusState: boolean | null = null
 
   private sequenceHandlers: ((sequence: string) => boolean)[] = []
   private prependedInputHandlers: ((sequence: string) => boolean)[] = []
@@ -581,6 +591,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.maxFps = config.maxFps || 60
     this.targetFrameTime = 1000 / this.targetFps
     this.minTargetFrameTime = 1000 / this.maxFps
+    this.clock = config.clock ?? new SystemClock()
     this.memorySnapshotInterval = config.memorySnapshotInterval ?? 0
     this.gatherStats = config.gatherStats || false
     this.maxStatSamples = config.maxStatSamples || 300
@@ -626,8 +637,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.addExitListeners()
 
-    this.clock = config.clock ?? new SystemClock()
-
     const stdinParserMaxBufferBytes = config.stdinParserMaxBufferBytes ?? DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES
     this.stdinParser = new StdinParser({
       timeoutMs: 10,
@@ -637,6 +646,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.drainStdinParser()
       },
       useKittyKeyboard: useKittyForParsing,
+      protocolContext: {
+        kittyKeyboardEnabled: useKittyForParsing,
+        privateCapabilityRepliesActive: false,
+        pixelResolutionQueryActive: false,
+        explicitWidthCprActive: false,
+      },
       clock: this.clock,
     })
 
@@ -716,6 +731,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return this._currentFocusedRenderable
   }
 
+  private normalizeClockTime(now: number, fallback: number): number {
+    if (Number.isFinite(now)) {
+      return now
+    }
+
+    return Number.isFinite(fallback) ? fallback : 0
+  }
+
+  private getElapsedMs(now: number, then: number): number {
+    if (!Number.isFinite(now) || !Number.isFinite(then)) {
+      return 0
+    }
+
+    return Math.max(now - then, 0)
+  }
+
   public focusRenderable(renderable: Renderable) {
     if (this._currentFocusedRenderable === renderable) return
 
@@ -787,8 +818,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     if (!this.updateScheduled && !this.renderTimeout) {
       this.updateScheduled = true
-      const now = this.clock.now()
-      const elapsed = now - this.lastTime
+      const now = this.normalizeClockTime(this.clock.now(), this.lastTime)
+      const elapsed = this.getElapsedMs(now, this.lastTime)
       const delay = Math.max(this.minTargetFrameTime - elapsed, 0)
 
       if (delay === 0) {
@@ -971,7 +1002,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this._console.resize(this.width, this.height)
     this.root.resize(this.width, this.height)
-    this.emit("resize", this.width, this.height)
+    this.emit(CliRenderEvents.RESIZE, this.width, this.height)
     this.requestRender()
   }
 
@@ -1040,10 +1071,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   public enableKittyKeyboard(flags: number = 0b00011): void {
     this.lib.enableKittyKeyboard(this.rendererPtr, flags)
+    this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: true })
   }
 
   public disableKittyKeyboard(): void {
     this.lib.disableKittyKeyboard(this.rendererPtr)
+    this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: false }, true)
   }
 
   public set useThread(useThread: boolean) {
@@ -1057,6 +1090,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this._terminalIsSetup) return
     this._terminalIsSetup = true
 
+    this.updateStdinParserProtocolContext({
+      privateCapabilityRepliesActive: true,
+      explicitWidthCprActive: true,
+    })
     this.lib.setupTerminal(this.rendererPtr, this._useAlternateScreen)
     this._capabilities = this.lib.getTerminalCapabilities(this.rendererPtr)
 
@@ -1072,6 +1109,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.capabilityTimeoutId = this.clock.setTimeout(() => {
       this.capabilityTimeoutId = null
       this.removeInputHandler(this.capabilityHandler)
+      this.updateStdinParserProtocolContext(
+        {
+          privateCapabilityRepliesActive: false,
+          explicitWidthCprActive: false,
+        },
+        true,
+      )
     }, 5000)
 
     if (this._useMouse) {
@@ -1105,6 +1149,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.sequenceHandlers = this.sequenceHandlers.filter((candidate) => candidate !== handler)
   }
 
+  private updateStdinParserProtocolContext(patch: Partial<StdinParserProtocolContext>, drain = false): void {
+    if (!this.stdinParser) return
+    this.stdinParser.updateProtocolContext(patch)
+    if (drain) this.drainStdinParser()
+  }
+
   public subscribeOsc(handler: (sequence: string) => void): () => void {
     this.oscSubscribers.add(handler)
     return () => {
@@ -1116,7 +1166,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (isCapabilityResponse(sequence)) {
       this.lib.processCapabilityResponse(this.rendererPtr, sequence)
       this._capabilities = this.lib.getTerminalCapabilities(this.rendererPtr)
-      this.emit("capabilities", this._capabilities)
+      this.emit(CliRenderEvents.CAPABILITIES, this._capabilities)
       return true
     }
     return false
@@ -1132,12 +1182,18 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.lib.restoreTerminalModes(this.rendererPtr)
         this.shouldRestoreModesOnNextFocus = false
       }
-      this.emit("focus")
+      if (this._terminalFocusState !== true) {
+        this._terminalFocusState = true
+        this.emit(CliRenderEvents.FOCUS)
+      }
       return true
     }
     if (sequence === "\x1b[O") {
       this.shouldRestoreModesOnNextFocus = true
-      this.emit("blur")
+      if (this._terminalFocusState !== false) {
+        this._terminalFocusState = false
+        this.emit(CliRenderEvents.BLUR)
+      }
       return true
     }
     return false
@@ -1147,14 +1203,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (sequence === "\x1b[?997;1n") {
       if (this._themeMode !== "dark") {
         this._themeMode = "dark"
-        this.emit("theme_mode", "dark")
+        this.emit(CliRenderEvents.THEME_MODE, "dark")
       }
       return true
     }
     if (sequence === "\x1b[?997;2n") {
       if (this._themeMode !== "light") {
         this._themeMode = "light"
-        this.emit("theme_mode", "light")
+        this.emit(CliRenderEvents.THEME_MODE, "light")
       }
       return true
     }
@@ -1242,8 +1298,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         const resolution = parsePixelResolution(sequence)
         if (resolution) {
           this._resolution = resolution
-          this.waitingForPixelResolution = false
         }
+        this.waitingForPixelResolution = false
+        this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: false }, true)
         return true
       }
       return false
@@ -1256,8 +1313,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.stdin.setRawMode(true)
     }
 
-    this.stdin.resume()
     this.stdin.on("data", this.stdinListener)
+    this.stdin.resume()
   }
 
   private dispatchMouseEvent(
@@ -1339,9 +1396,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     ) {
       const canStartSelection = Boolean(
         maybeRenderable &&
-          maybeRenderable.selectable &&
-          !maybeRenderable.isDestroyed &&
-          maybeRenderable.shouldStartSelection(mouseEvent.x, mouseEvent.y),
+        maybeRenderable.selectable &&
+        !maybeRenderable.isDestroyed &&
+        maybeRenderable.shouldStartSelection(mouseEvent.x, mouseEvent.y),
       )
 
       if (canStartSelection && maybeRenderable) {
@@ -1517,7 +1574,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.lastMemorySnapshot.arrayBuffers,
     )
 
-    this.emit("memory:snapshot", this.lastMemorySnapshot)
+    this.emit(CliRenderEvents.MEMORY_SNAPSHOT, this.lastMemorySnapshot)
   }
 
   private startMemorySnapshotTimer(): void {
@@ -1566,6 +1623,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private queryPixelResolution() {
     this.waitingForPixelResolution = true
+    this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: true })
     this.lib.queryPixelResolution(this.rendererPtr)
   }
 
@@ -1603,7 +1661,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.currentRenderBuffer = this.lib.getCurrentBuffer(this.rendererPtr)
     this._console.resize(this.width, this.height)
     this.root.resize(this.width, this.height)
-    this.emit("resize", this.width, this.height)
+    this.emit(CliRenderEvents.RESIZE, this.width, this.height)
     this.requestRender()
   }
 
@@ -1784,6 +1842,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.disableMouse()
     this.removeExitListeners()
+    this.waitingForPixelResolution = false
+    this.updateStdinParserProtocolContext({
+      privateCapabilityRepliesActive: false,
+      pixelResolutionQueryActive: false,
+      explicitWidthCprActive: false,
+    })
     this.stdinParser?.reset()
     this.stdin.removeListener("data", this.stdinListener)
     this.lib.suspendRenderer(this.rendererPtr)
@@ -1800,14 +1864,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.stdin.setRawMode(true)
     }
 
+    // Drain any input buffered during suspension before registering the
+    // listener. Adding a "data" listener can auto-resume a Readable, so the
+    // drain must come first while the stream is still paused and read()
+    // pulls from the internal buffer rather than being a flowing-mode no-op.
+    while (this.stdin.read() !== null) {}
+    this.stdin.on("data", this.stdinListener)
     this.stdin.resume()
     this.addExitListeners()
-
-    setImmediate(() => {
-      // Consume any existing stdin data to avoid processing stale input
-      while (this.stdin.read() !== null) {}
-      this.stdin.on("data", this.stdinListener)
-    })
 
     this.lib.resumeRenderer(this.rendererPtr)
 
@@ -1925,6 +1989,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._isRunning = false
 
     this.waitingForPixelResolution = false
+    this.updateStdinParserProtocolContext(
+      {
+        privateCapabilityRepliesActive: false,
+        pixelResolutionQueryActive: false,
+        explicitWidthCprActive: false,
+      },
+      true,
+    )
     this.setCapturedRenderable(undefined)
 
     try {
@@ -1967,7 +2039,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private startRenderLoop(): void {
     if (!this._isRunning) return
 
-    this.lastTime = this.clock.now()
+    this.lastTime = this.normalizeClockTime(this.clock.now(), 0)
     this.frameCount = 0
     this.lastFpsTime = this.lastTime
     this.currentFps = 0
@@ -1985,14 +2057,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.renderTimeout = null
     }
     try {
-      const now = this.clock.now()
-      const elapsed = now - this.lastTime
+      const now = this.normalizeClockTime(this.clock.now(), this.lastTime)
+      const elapsed = this.getElapsedMs(now, this.lastTime)
 
       const deltaTime = elapsed
       this.lastTime = now
 
       this.frameCount++
-      if (now - this.lastFpsTime >= 1000) {
+      if (this.getElapsedMs(now, this.lastFpsTime) >= 1000) {
         this.currentFps = this.frameCount
         this.frameCount = 0
         this.lastFpsTime = now
@@ -2243,7 +2315,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private finishSelection(): void {
     if (this.currentSelection) {
       this.currentSelection.isDragging = false
-      this.emit("selection", this.currentSelection)
+      this.emit(CliRenderEvents.SELECTION, this.currentSelection)
       this.notifySelectablesOfSelectionChange()
     }
   }
