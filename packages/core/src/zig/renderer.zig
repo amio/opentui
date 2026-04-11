@@ -260,6 +260,8 @@ pub const CliRenderer = struct {
             .hitScissorStack = hitScissorStack,
         };
 
+        nextBuffer.setBlendBackdropColor(.{ self.backgroundColor[0], self.backgroundColor[1], self.backgroundColor[2], 1.0 });
+
         try currentBuffer.clear(.{ self.backgroundColor[0], self.backgroundColor[1], self.backgroundColor[2], self.backgroundColor[3] }, CLEAR_CHAR);
         try nextBuffer.clear(.{ self.backgroundColor[0], self.backgroundColor[1], self.backgroundColor[2], self.backgroundColor[3] }, null);
 
@@ -464,6 +466,7 @@ pub const CliRenderer = struct {
 
         try self.currentRenderBuffer.resize(width, height);
         try self.nextRenderBuffer.resize(width, height);
+        self.nextRenderBuffer.setBlendBackdropColor(.{ self.backgroundColor[0], self.backgroundColor[1], self.backgroundColor[2], 1.0 });
 
         try self.currentRenderBuffer.clear(.{ 0.0, 0.0, 0.0, 1.0 }, CLEAR_CHAR);
         try self.nextRenderBuffer.clear(.{ self.backgroundColor[0], self.backgroundColor[1], self.backgroundColor[2], self.backgroundColor[3] }, null);
@@ -496,6 +499,7 @@ pub const CliRenderer = struct {
 
     pub fn setBackgroundColor(self: *CliRenderer, rgba: RGBA) void {
         self.backgroundColor = rgba;
+        self.nextRenderBuffer.setBlendBackdropColor(.{ rgba[0], rgba[1], rgba[2], 1.0 });
     }
 
     pub fn setRenderOffset(self: *CliRenderer, offset: u32) void {
@@ -738,8 +742,11 @@ pub const CliRenderer = struct {
                         }
                     }
                 } else if (gp.isContinuationChar(cell.char)) {
-                    // Write a space for continuation cells to clear any previous content
-                    writer.writeByte(' ') catch {};
+                    // Intentionally do not write a space for continuation cells.
+                    // NOTE: disabled to fix 2-cell emoji rendering when the two
+                    // cells have distinct colors (space overwrite can break glyph output)
+
+                    // writer.writeByte(' ') catch {};
                 } else {
                     const len = std.unicode.utf8Encode(@intCast(cell.char), &utf8Buf) catch 1;
                     writer.writeAll(utf8Buf[0..len]) catch {};

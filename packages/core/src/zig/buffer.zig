@@ -100,12 +100,19 @@ inline fn isFullyOpaque(opacity: f32, fg: RGBA, bg: RGBA) bool {
     return opacity == 1.0 and !isRGBAWithAlpha(fg) and !isRGBAWithAlpha(bg);
 }
 
-fn blendColors(overlay: RGBA, text: RGBA) RGBA {
+fn blendColors(overlay: RGBA, text: RGBA, blendBackdropColor: ?RGBA) RGBA {
+    var dest = text;
+    if (dest[3] == 0.0) {
+        if (blendBackdropColor) |backdrop| {
+            dest = backdrop;
+        }
+    }
+
     if (overlay[3] == 1.0) {
         return overlay;
     }
 
-    if (text[3] == 0.0) {
+    if (dest[3] == 0.0) {
         const alpha = overlay[3];
         const r = overlay[0] * alpha;
         const g = overlay[1] * alpha;
@@ -129,12 +136,12 @@ fn blendColors(overlay: RGBA, text: RGBA) RGBA {
     }
 
     const overlayVec = Vec3f{ overlay[0], overlay[1], overlay[2] };
-    const textVec = Vec3f{ text[0], text[1], text[2] };
+    const textVec = Vec3f{ dest[0], dest[1], dest[2] };
     const alphaSplat = @as(Vec3f, @splat(perceptualAlpha));
     const oneMinusAlpha = @as(Vec3f, @splat(1.0 - perceptualAlpha));
     const blended = overlayVec * alphaSplat + textVec * oneMinusAlpha;
 
-    const resultAlpha = alpha + text[3] * (1.0 - alpha);
+    const resultAlpha = alpha + dest[3] * (1.0 - alpha);
 
     return .{ blended[0], blended[1], blended[2], resultAlpha };
 }
@@ -150,6 +157,7 @@ pub const OptimizedBuffer = struct {
     width: u32,
     height: u32,
     respectAlpha: bool,
+    blendBackdropColor: ?RGBA,
     allocator: Allocator,
     pool: *gp.GraphemePool,
     link_pool: *link.LinkPool,
@@ -163,10 +171,18 @@ pub const OptimizedBuffer = struct {
 
     const InitOptions = struct {
         respectAlpha: bool = false,
+        blendBackdropColor: ?RGBA = null,
         pool: *gp.GraphemePool,
         width_method: utf8.WidthMethod = .unicode,
         id: []const u8 = "unnamed buffer",
         link_pool: ?*link.LinkPool = null,
+    };
+
+    const BoxTitleLayout = struct {
+        shouldDraw: bool = false,
+        x: i32 = 0,
+        startX: i32 = 0,
+        endX: i32 = 0,
     };
 
     pub fn init(allocator: Allocator, width: u32, height: u32, options: InitOptions) BufferError!*OptimizedBuffer {
@@ -212,6 +228,7 @@ pub const OptimizedBuffer = struct {
             .width = width,
             .height = height,
             .respectAlpha = options.respectAlpha,
+            .blendBackdropColor = options.blendBackdropColor,
             .allocator = allocator,
             .pool = options.pool,
             .link_pool = lp,
@@ -621,6 +638,14 @@ pub const OptimizedBuffer = struct {
         return self.respectAlpha;
     }
 
+    pub fn setBlendBackdropColor(self: *OptimizedBuffer, color: ?RGBA) void {
+        self.blendBackdropColor = color;
+    }
+
+    pub fn getBlendBackdropColor(self: *const OptimizedBuffer) ?RGBA {
+        return self.blendBackdropColor;
+    }
+
     pub fn getId(self: *const OptimizedBuffer) []const u8 {
         return self.id;
     }
@@ -703,12 +728,15 @@ pub const OptimizedBuffer = struct {
         return bytes_written;
     }
 
-    pub fn blendCells(overlayCell: Cell, destCell: Cell) Cell {
+    pub fn blendCells(self: *const OptimizedBuffer, overlayCell: Cell, destCell: Cell) Cell {
         const hasBgAlpha = isRGBAWithAlpha(overlayCell.bg);
         const hasFgAlpha = isRGBAWithAlpha(overlayCell.fg);
 
         if (hasBgAlpha or hasFgAlpha) {
-            const blendedBgRgb = if (hasBgAlpha) blendColors(overlayCell.bg, destCell.bg) else overlayCell.bg;
+            const blendedBg = if (hasBgAlpha)
+                blendColors(overlayCell.bg, destCell.bg, self.blendBackdropColor)
+            else
+                overlayCell.bg;
             const charIsDefaultSpace = overlayCell.char == DEFAULT_SPACE_CHAR;
             const destNotZero = destCell.char != 0;
             const destNotDefaultSpace = destCell.char != DEFAULT_SPACE_CHAR;
@@ -722,9 +750,12 @@ pub const OptimizedBuffer = struct {
 
             var finalFg: RGBA = undefined;
             if (preserveChar) {
-                finalFg = blendColors(overlayCell.bg, destCell.fg);
+                finalFg = blendColors(overlayCell.bg, destCell.fg, self.blendBackdropColor);
             } else {
-                finalFg = if (hasFgAlpha) blendColors(overlayCell.fg, destCell.bg) else overlayCell.fg;
+                finalFg = if (hasFgAlpha)
+                    blendColors(overlayCell.fg, destCell.bg, self.blendBackdropColor)
+                else
+                    overlayCell.fg;
             }
 
             // When preserving char, preserve its base attributes but NOT its link
@@ -744,7 +775,7 @@ pub const OptimizedBuffer = struct {
             return Cell{
                 .char = finalChar,
                 .fg = finalFg,
-                .bg = .{ blendedBgRgb[0], blendedBgRgb[1], blendedBgRgb[2], finalBgAlpha },
+                .bg = .{ blendedBg[0], blendedBg[1], blendedBg[2], finalBgAlpha },
                 .attributes = finalAttributes,
             };
         }
@@ -776,7 +807,7 @@ pub const OptimizedBuffer = struct {
         const overlayCell = Cell{ .char = char, .fg = effectiveFg, .bg = effectiveBg, .attributes = attributes };
 
         if (self.get(x, y)) |destCell| {
-            const blendedCell = blendCells(overlayCell, destCell);
+            const blendedCell = self.blendCells(overlayCell, destCell);
             self.set(x, y, blendedCell);
         } else {
             self.set(x, y, overlayCell);
@@ -810,7 +841,7 @@ pub const OptimizedBuffer = struct {
         const overlayCell = Cell{ .char = char, .fg = effectiveFg, .bg = effectiveBg, .attributes = attributes };
 
         if (self.get(x, y)) |destCell| {
-            const blendedCell = blendCells(overlayCell, destCell);
+            const blendedCell = self.blendCells(overlayCell, destCell);
             assert(!gp.isGraphemeChar(blendedCell.char));
             assert(!gp.isContinuationChar(blendedCell.char));
             self.setRaw(x, y, blendedCell);
@@ -1669,6 +1700,8 @@ pub const OptimizedBuffer = struct {
         shouldFill: bool,
         title: ?[]const u8,
         titleAlignment: u8, // 0=left, 1=center, 2=right
+        bottomTitle: ?[]const u8,
+        bottomTitleAlignment: u8, // 0=left, 1=center, 2=right
     ) !void {
         const startX = @max(0, x);
         const startY = @max(0, y);
@@ -1686,36 +1719,8 @@ pub const OptimizedBuffer = struct {
         const isAtActualTop = startY == y;
         const isAtActualBottom = endY == y + @as(i32, @intCast(height)) - 1;
 
-        var shouldDrawTitle = false;
-        var titleX: i32 = startX;
-        var titleStartX: i32 = 0;
-        var titleEndX: i32 = 0;
-
-        if (title) |titleText| {
-            if (titleText.len > 0 and borderSides.top and isAtActualTop) {
-                const is_ascii = utf8.isAsciiOnly(titleText);
-                const titleLength = @as(i32, @intCast(utf8.calculateTextWidth(titleText, 2, is_ascii, self.width_method)));
-                const minTitleSpace = 4;
-
-                shouldDrawTitle = @as(i32, @intCast(width)) >= titleLength + minTitleSpace;
-
-                if (shouldDrawTitle) {
-                    const padding = 2;
-
-                    if (titleAlignment == 1) { // center
-                        titleX = startX + @max(padding, @divFloor(@as(i32, @intCast(width)) - titleLength, 2));
-                    } else if (titleAlignment == 2) { // right
-                        titleX = startX + @as(i32, @intCast(width)) - padding - titleLength;
-                    } else { // left
-                        titleX = startX + padding;
-                    }
-
-                    titleX = @max(startX + padding, @min(titleX, endX - titleLength));
-                    titleStartX = titleX;
-                    titleEndX = titleX + titleLength - 1;
-                }
-            }
-        }
+        const titleLayout = self.computeBoxTitleLayout(title, borderSides.top, isAtActualTop, startX, endX, width, titleAlignment);
+        const bottomTitleLayout = self.computeBoxTitleLayout(bottomTitle, borderSides.bottom, isAtActualBottom, startX, endX, width, bottomTitleAlignment);
 
         if (shouldFill) {
             if (!borderSides.top and !borderSides.right and !borderSides.bottom and !borderSides.left) {
@@ -1752,7 +1757,7 @@ pub const OptimizedBuffer = struct {
                 var drawX = startX;
                 while (drawX <= endX) : (drawX += 1) {
                     if (startY >= 0 and startY < @as(i32, @intCast(self.height))) {
-                        if (shouldDrawTitle and drawX >= titleStartX and drawX <= titleEndX) {
+                        if (titleLayout.shouldDraw and drawX >= titleLayout.startX and drawX <= titleLayout.endX) {
                             continue;
                         }
 
@@ -1775,6 +1780,10 @@ pub const OptimizedBuffer = struct {
                 var drawX = startX;
                 while (drawX <= endX) : (drawX += 1) {
                     if (endY >= 0 and endY < @as(i32, @intCast(self.height))) {
+                        if (bottomTitleLayout.shouldDraw and drawX >= bottomTitleLayout.startX and drawX <= bottomTitleLayout.endX) {
+                            continue;
+                        }
+
                         var char = borderChars[@intFromEnum(BorderCharIndex.horizontal)];
 
                         // Handle corners
@@ -1809,11 +1818,60 @@ pub const OptimizedBuffer = struct {
             }
         }
 
-        if (shouldDrawTitle) {
+        if (titleLayout.shouldDraw) {
             if (title) |titleText| {
-                try self.drawText(titleText, @intCast(titleX), @intCast(startY), borderColor, backgroundColor, 0);
+                try self.drawText(titleText, @intCast(titleLayout.x), @intCast(startY), borderColor, backgroundColor, 0);
             }
         }
+
+        if (bottomTitleLayout.shouldDraw) {
+            if (bottomTitle) |titleText| {
+                try self.drawText(titleText, @intCast(bottomTitleLayout.x), @intCast(endY), borderColor, backgroundColor, 0);
+            }
+        }
+    }
+
+    fn computeBoxTitleLayout(
+        self: *OptimizedBuffer,
+        titleText: ?[]const u8,
+        borderSide: bool,
+        isAtActualSide: bool,
+        startX: i32,
+        endX: i32,
+        width: u32,
+        alignment: u8,
+    ) BoxTitleLayout {
+        const text = titleText orelse return .{ .x = startX };
+
+        if (text.len == 0 or !borderSide or !isAtActualSide) {
+            return .{ .x = startX };
+        }
+
+        const is_ascii = utf8.isAsciiOnly(text);
+        const titleLength = @as(i32, @intCast(utf8.calculateTextWidth(text, 2, is_ascii, self.width_method)));
+        const minTitleSpace = 4;
+
+        if (@as(i32, @intCast(width)) < titleLength + minTitleSpace) {
+            return .{ .x = startX };
+        }
+
+        const padding = 2;
+        var titleX = startX + padding;
+
+        if (alignment == 1) {
+            titleX = startX + @max(padding, @divFloor(@as(i32, @intCast(width)) - titleLength, 2));
+        } else if (alignment == 2) {
+            titleX = startX + @as(i32, @intCast(width)) - padding - titleLength;
+        }
+
+        titleX = @max(startX + padding, @min(titleX, endX - titleLength));
+
+        return .{
+            .shouldDraw = true,
+            .x = titleX,
+            .startX = titleX,
+            .endX = titleX + titleLength - 1,
+        };
     }
 
     /// Draw a buffer of pixel data using super sampling (2x2 pixels per character cell)

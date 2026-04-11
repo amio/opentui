@@ -4,6 +4,7 @@ import { EventEmitter } from "events"
 import {
   type CursorStyle,
   type CursorStyleOptions,
+  type TargetChannel,
   type DebugOverlayCorner,
   type WidthMethod,
   type Highlight,
@@ -261,6 +262,14 @@ function getOpenTUILib(libPath?: string) {
       args: ["ptr", "u32", "u32", "u32", "u32", "ptr"],
       returns: "void",
     },
+    bufferColorMatrix: {
+      args: ["ptr", "ptr", "ptr", "usize", "f32", "u8"],
+      returns: "void",
+    },
+    bufferColorMatrixUniform: {
+      args: ["ptr", "ptr", "f32", "u8"],
+      returns: "void",
+    },
     bufferResize: {
       args: ["ptr", "u32", "u32"],
       returns: "void",
@@ -354,7 +363,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     bufferDrawBox: {
-      args: ["ptr", "i32", "i32", "u32", "u32", "ptr", "u32", "ptr", "ptr", "ptr", "u32"],
+      args: ["ptr", "i32", "i32", "u32", "u32", "ptr", "u32", "ptr", "ptr", "ptr", "u32", "ptr", "u32"],
       returns: "void",
     },
     bufferPushScissorRect: {
@@ -1439,6 +1448,15 @@ export interface RenderLib {
     attributes?: number,
   ) => void
   bufferFillRect: (buffer: Pointer, x: number, y: number, width: number, height: number, color: RGBA) => void
+  bufferColorMatrix: (
+    buffer: Pointer,
+    matrixPtr: Pointer,
+    cellMaskPtr: Pointer,
+    cellMaskCount: number,
+    strength: number,
+    target: TargetChannel,
+  ) => void
+  bufferColorMatrixUniform: (buffer: Pointer, matrixPtr: Pointer, strength: number, target: TargetChannel) => void
   bufferDrawSuperSampleBuffer: (
     buffer: Pointer,
     x: number,
@@ -1499,6 +1517,7 @@ export interface RenderLib {
     borderColor: RGBA,
     backgroundColor: RGBA,
     title: string | null,
+    bottomTitle: string | null,
   ) => void
   bufferResize: (buffer: Pointer, width: number, height: number) => void
   resizeRenderer: (renderer: Pointer, width: number, height: number) => void
@@ -2169,6 +2188,21 @@ class FFIRenderLib implements RenderLib {
     this.opentui.symbols.bufferFillRect(buffer, x, y, width, height, bg)
   }
 
+  public bufferColorMatrix(
+    buffer: Pointer,
+    matrixPtr: Pointer,
+    cellMaskPtr: Pointer,
+    cellMaskCount: number,
+    strength: number,
+    target: TargetChannel,
+  ): void {
+    this.opentui.symbols.bufferColorMatrix(buffer, matrixPtr, cellMaskPtr, cellMaskCount, strength, target)
+  }
+
+  public bufferColorMatrixUniform(buffer: Pointer, matrixPtr: Pointer, strength: number, target: TargetChannel): void {
+    this.opentui.symbols.bufferColorMatrixUniform(buffer, matrixPtr, strength, target)
+  }
+
   public bufferDrawSuperSampleBuffer(
     buffer: Pointer,
     x: number,
@@ -2294,10 +2328,15 @@ class FFIRenderLib implements RenderLib {
     borderColor: RGBA,
     backgroundColor: RGBA,
     title: string | null,
+    bottomTitle: string | null,
   ): void {
     const titleBytes = title ? this.encoder.encode(title) : null
     const titleLen = title ? titleBytes!.length : 0
     const titlePtr = title ? titleBytes : null
+
+    const bottomTitleBytes = bottomTitle ? this.encoder.encode(bottomTitle) : null
+    const bottomTitleLen = bottomTitle ? bottomTitleBytes!.length : 0
+    const bottomTitlePtr = bottomTitle ? bottomTitleBytes : null
 
     this.opentui.symbols.bufferDrawBox(
       buffer,
@@ -2311,6 +2350,8 @@ class FFIRenderLib implements RenderLib {
       backgroundColor.buffer,
       titlePtr,
       titleLen,
+      bottomTitlePtr,
+      bottomTitleLen,
     )
   }
 

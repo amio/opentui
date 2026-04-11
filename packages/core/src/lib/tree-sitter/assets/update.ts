@@ -13,6 +13,7 @@ interface ParsersConfig {
 
 interface GeneratedParser {
   filetype: string
+  aliases?: string[]
   languagePath: string
   highlightsPath: string
   injectionsPath?: string
@@ -145,42 +146,29 @@ async function downloadAndCombineQueries(
 }
 
 async function generateDefaultParsersFile(parsers: GeneratedParser[], outputPath: string): Promise<void> {
-  const imports = parsers
-    .map((parser) => {
-      const safeFiletype = parser.filetype.replace(/[^a-zA-Z0-9]/g, "_")
-      const lines = [
-        `import ${safeFiletype}_highlights from "${parser.highlightsPath}" with { type: "file" }`,
-        `import ${safeFiletype}_language from "${parser.languagePath}" with { type: "file" }`,
-      ]
-      if (parser.injectionsPath) {
-        lines.push(`import ${safeFiletype}_injections from "${parser.injectionsPath}" with { type: "file" }`)
-      }
-      return lines.join("\n")
-    })
-    .join("\n")
-
   const parserDefinitions = parsers
     .map((parser) => {
       const safeFiletype = parser.filetype.replace(/[^a-zA-Z0-9]/g, "_")
       const queriesLines = [
-        `          highlights: [resolve(dirname(fileURLToPath(import.meta.url)), ${safeFiletype}_highlights)],`,
+        `          highlights: [fileURLToPath(new URL("${parser.highlightsPath}", import.meta.url))],`,
       ]
       if (parser.injectionsPath) {
         queriesLines.push(
-          `          injections: [resolve(dirname(fileURLToPath(import.meta.url)), ${safeFiletype}_injections)],`,
+          `          injections: [fileURLToPath(new URL("${parser.injectionsPath}", import.meta.url))],`,
         )
       }
 
       const injectionMappingLine = parser.injectionMapping
         ? `        injectionMapping: ${JSON.stringify(parser.injectionMapping, null, 10)},`
         : ""
+      const aliasesLine = parser.aliases?.length ? `        aliases: ${JSON.stringify(parser.aliases)},` : ""
 
       return `      {
         filetype: "${parser.filetype}",
-        queries: {
+${aliasesLine ? aliasesLine + "\n" : ""}        queries: {
 ${queriesLines.join("\n")}
         },
-        wasm: resolve(dirname(fileURLToPath(import.meta.url)), ${safeFiletype}_language),${injectionMappingLine ? "\n" + injectionMappingLine : ""}
+        wasm: fileURLToPath(new URL("${parser.languagePath}", import.meta.url)),${injectionMappingLine ? "\n" + injectionMappingLine : ""}
       }`
     })
     .join(",\n")
@@ -190,10 +178,7 @@ ${queriesLines.join("\n")}
 // Last generated: ${new Date().toISOString()}
 
 import type { FiletypeParserOptions } from "./types"
-import { resolve, dirname } from "path"
 import { fileURLToPath } from "url"
-
-${imports}
 
 // Cached parsers to avoid re-resolving paths on every call
 let _cachedParsers: FiletypeParserOptions[] | undefined
@@ -259,6 +244,7 @@ async function main(options?: Partial<UpdateOptions>): Promise<void> {
 
       generatedParsers.push({
         filetype: parser.filetype,
+        aliases: parser.aliases,
         languagePath,
         highlightsPath,
         injectionsPath,

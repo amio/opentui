@@ -103,6 +103,15 @@ async function renderMarkdown(markdown: string, conceal: boolean = true): Promis
   return "\n" + lines.join("\n").trimEnd()
 }
 
+function findSpanContaining(frame: CapturedFrame, text: string) {
+  for (const line of frame.lines) {
+    const span = line.spans.find((candidate) => candidate.text.includes(text))
+    if (span) return span
+  }
+
+  return undefined
+}
+
 test("basic table alignment", async () => {
   const markdown = `| Name | Age |
 |---|---|
@@ -1079,8 +1088,8 @@ Visit [GitHub](https://github.com) for more.
 // Custom renderNode tests
 
 test("custom renderNode can override heading rendering", async () => {
-  const { TextRenderable } = await import("../Text")
-  const { StyledText } = await import("../../lib/styled-text")
+  const { TextRenderable } = await import("../Text.js")
+  const { StyledText } = await import("../../lib/styled-text.js")
 
   // Helper to extract text from marked tokens
   const extractText = (node: any): string => {
@@ -1122,8 +1131,8 @@ Regular paragraph.`,
 })
 
 test("custom renderNode can override code block rendering", async () => {
-  const { BoxRenderable } = await import("../Box")
-  const { TextRenderable } = await import("../Text")
+  const { BoxRenderable } = await import("../Box.js")
+  const { TextRenderable } = await import("../Text.js")
 
   const md = createMarkdownRenderable({
     id: "custom-code",
@@ -2168,14 +2177,6 @@ The table alignment uses:
 
   renderer.root.add(md)
   await renderMarkdownRenderable(md)
-
-  const findSpanContaining = (frame: CapturedFrame, text: string) => {
-    for (const line of frame.lines) {
-      const span = line.spans.find((candidate) => candidate.text.includes(text))
-      if (span) return span
-    }
-    return undefined
-  }
 
   const frame1 = captureSpans()
   const headingSpan1 = findSpanContaining(frame1, "OpenTUI Markdown Demo")

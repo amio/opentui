@@ -1,18 +1,18 @@
-import type { TextBuffer } from "./text-buffer.js"
 import { RGBA } from "./lib/index.js"
 import { resolveRenderLib, type RenderLib } from "./zig.js"
 import { type Pointer, toArrayBuffer, ptr } from "bun:ffi"
 import { type BorderStyle, type BorderSides, BorderCharArrays, parseBorderStyle } from "./lib/index.js"
-import { type WidthMethod, type CapturedSpan, type CapturedLine } from "./types.js"
+import { TargetChannel, type WidthMethod, type CapturedSpan, type CapturedLine } from "./types.js"
 import type { TextBufferView } from "./text-buffer-view.js"
 import type { EditorView } from "./editor-view.js"
 
 // Pack drawing options into a single u32
-// bits 0-3: borderSides, bit 4: shouldFill, bits 5-6: titleAlignment
+// bits 0-3: borderSides, bit 4: shouldFill, bits 5-6: titleAlignment, bits 7-8: bottomTitleAlignment
 function packDrawOptions(
   border: boolean | BorderSides[],
   shouldFill: boolean,
   titleAlignment: "left" | "center" | "right",
+  bottomTitleAlignment: "left" | "center" | "right",
 ): number {
   let packed = 0
 
@@ -35,7 +35,10 @@ function packDrawOptions(
     right: 2,
   }
   const alignment = alignmentMap[titleAlignment]
+  const bottomAlignment = alignmentMap[bottomTitleAlignment]
+
   packed |= alignment << 5
+  packed |= bottomAlignment << 7
 
   return packed
 }
@@ -288,6 +291,30 @@ export class OptimizedBuffer {
     this.lib.bufferFillRect(this.bufferPtr, x, y, width, height, bg)
   }
 
+  public colorMatrix(
+    matrix: Float32Array,
+    cellMask: Float32Array,
+    strength: number = 1.0,
+    target: TargetChannel = TargetChannel.Both,
+  ): void {
+    this.guard()
+    if (matrix.length !== 16) throw new RangeError(`colorMatrix matrix must have length 16, got ${matrix.length}`)
+    const cellMaskCount = Math.floor(cellMask.length / 3)
+    this.lib.bufferColorMatrix(this.bufferPtr, ptr(matrix), ptr(cellMask), cellMaskCount, strength, target)
+  }
+
+  public colorMatrixUniform(
+    matrix: Float32Array,
+    strength: number = 1.0,
+    target: TargetChannel = TargetChannel.Both,
+  ): void {
+    this.guard()
+    if (matrix.length !== 16)
+      throw new RangeError(`colorMatrixUniform matrix must have length 16, got ${matrix.length}`)
+    if (strength === 0.0) return
+    this.lib.bufferColorMatrixUniform(this.bufferPtr, ptr(matrix), strength, target)
+  }
+
   public drawFrameBuffer(
     destX: number,
     destY: number,
@@ -416,12 +443,19 @@ export class OptimizedBuffer {
     shouldFill?: boolean
     title?: string
     titleAlignment?: "left" | "center" | "right"
+    bottomTitle?: string
+    bottomTitleAlignment?: "left" | "center" | "right"
   }): void {
     this.guard()
     const style = parseBorderStyle(options.borderStyle, "single")
     const borderChars: Uint32Array = options.customBorderChars ?? BorderCharArrays[style]
 
-    const packedOptions = packDrawOptions(options.border, options.shouldFill ?? false, options.titleAlignment || "left")
+    const packedOptions = packDrawOptions(
+      options.border,
+      options.shouldFill ?? false,
+      options.titleAlignment || "left",
+      options.bottomTitleAlignment || "left",
+    )
 
     this.lib.bufferDrawBox(
       this.bufferPtr,
@@ -434,6 +468,7 @@ export class OptimizedBuffer {
       options.borderColor,
       options.backgroundColor,
       options.title ?? null,
+      options.bottomTitle ?? null,
     )
   }
 
