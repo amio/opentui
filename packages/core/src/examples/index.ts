@@ -48,6 +48,7 @@ import * as mouseInteractionExample from "./mouse-interaction-demo.js"
 import * as textSelectionExample from "./text-selection-demo.js"
 import * as asciiFontSelectionExample from "./ascii-font-selection-demo.js"
 import * as splitModeExample from "./split-mode-demo.js"
+import * as splitFooterStreamingDemo from "./split-footer-streaming-demo.js"
 import * as consoleExample from "./console-demo.js"
 import * as vnodeCompositionDemo from "./vnode-composition-demo.js"
 import * as hastSyntaxHighlightingExample from "./hast-syntax-highlighting-demo.js"
@@ -72,6 +73,7 @@ import * as grayscaleBufferDemo from "./grayscale-buffer-demo.js"
 import * as focusRestoreDemo from "./focus-restore-demo.js"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 import * as corePluginSlotsDemo from "./core-plugin-slots-demo.js"
+import * as wideGraphemeOverlayDemo from "./wide-grapheme-overlay-demo.js"
 
 interface Example {
   name: string
@@ -196,12 +198,6 @@ const examples: Example[] = [
     destroy: linkDemo.destroy,
   },
   {
-    name: "Extmarks Demo",
-    description: "Virtual extmarks - text ranges that cursor jumps over, like inline tags and links",
-    run: extmarksDemo.run,
-    destroy: extmarksDemo.destroy,
-  },
-  {
     name: "Opacity Demo",
     description: "Box opacity and transparency effects with animated opacity transitions",
     run: opacityExample.run,
@@ -237,6 +233,12 @@ const examples: Example[] = [
     description: "Markdown rendering with table alignment, syntax highlighting, and theme switching",
     run: markdownDemo.run,
     destroy: markdownDemo.destroy,
+  },
+  {
+    name: "Split Footer Streaming Demo",
+    description: "Focused split-footer surface demo for progressive text, code, and markdown scrollback",
+    run: splitFooterStreamingDemo.run,
+    destroy: splitFooterStreamingDemo.destroy,
   },
   {
     name: "Live State Management Demo",
@@ -441,6 +443,12 @@ const examples: Example[] = [
     description: "Draggable boxes and background filled with complex graphemes",
     run: fullUnicodeExample.run,
     destroy: fullUnicodeExample.destroy,
+  },
+  {
+    name: "Wide Grapheme Overlay Demo",
+    description: "Drag transparent boxes over CJK/emoji, toggle dimming scrim with D key",
+    run: wideGraphemeOverlayDemo.run,
+    destroy: wideGraphemeOverlayDemo.destroy,
   },
   {
     name: "Split Mode Demo (Experimental)",
