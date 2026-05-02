@@ -57,8 +57,10 @@ jobs:
           cd packages/core
           bun run build:native --all
           bun run build:lib
+          cd ../three && bun run build
           cd ../solid && bun run build
           cd ../react && bun run build
+          cd ../keymap && bun run build
 
       - name: Publish packages
         run: bun run publish

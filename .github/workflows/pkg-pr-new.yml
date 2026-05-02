@@ -1,31 +1,26 @@
 name: Publish Preview Packages
 
 on:
-  pull_request:
-    paths:
-      - "packages/core/**"
-      - "packages/react/**"
-      - "packages/solid/**"
-  push:
-    branches:
-      - "**"
-    tags:
-      - "!**"
-    paths:
-      - "packages/core/**"
-      - "packages/react/**"
-      - "packages/solid/**"
+  issue_comment:
+    types: [created]
 
 permissions: {}
 
 jobs:
   publish:
     name: Publish Preview
+    if: |
+      github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
+      (contains(github.event.comment.body, ' /pkg-preview') ||
+        startsWith(github.event.comment.body, '/pkg-preview')) &&
+      contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
+      - name: Checkout PR branch
         uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -43,6 +38,10 @@ jobs:
       - name: Build core (all platforms via cross-compilation)
         run: bun scripts/build.ts --native --all && bun scripts/build.ts --lib
         working-directory: packages/core
+
+      - name: Build three
+        run: bun run build --ci
+        working-directory: packages/three
 
       - name: Get native package directories
         id: native-packages
@@ -64,5 +63,6 @@ jobs:
           npx pkg-pr-new publish --no-template --commentWithSha --bun \
             './packages/core/dist' \
             ${{ steps.native-packages.outputs.dirs }} \
+            './packages/three/dist' \
             './packages/react/dist' \
             './packages/solid/dist'

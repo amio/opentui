@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { createTestRenderer, type TestRendererOptions } from "@opentui/core/testing"
 import { createContext, createComponent, createSignal, onCleanup, onMount, useContext, type JSX } from "solid-js"
-import { createSlot, createSolidSlotRegistry, Slot, type SolidPlugin } from "../src/plugins/slot"
-import { _render as renderInternal } from "../src/reconciler"
-import { RendererContext } from "../src/elements"
+import { createSlot, createSolidSlotRegistry, Slot, type SolidPlugin } from "../src/plugins/slot.js"
+import { _render as renderInternal } from "../src/reconciler.js"
+import { RendererContext } from "../src/elements/index.js"
 
 interface AppSlots {
   statusbar: { user: string }
@@ -174,6 +174,98 @@ describe("Solid Slot System", () => {
     expect(frame).not.toContain("replace-fallback")
   })
 
+  it("replace mode does not invoke fallback components when plugin content wins", async () => {
+    const fallbackLifecycle: string[] = []
+
+    const FallbackProbe = () => {
+      fallbackLifecycle.push("render")
+
+      onMount(() => {
+        fallbackLifecycle.push("mount")
+      })
+
+      onCleanup(() => {
+        fallbackLifecycle.push("cleanup")
+      })
+
+      return <text>fallback-probe</text>
+    }
+
+    const { setup } = await setupSlotTest(
+      (registry) => {
+        registry.register({
+          id: "replace-plugin",
+          slots: {
+            statusbar() {
+              return <text>plugin-only</text>
+            },
+          },
+        })
+
+        const Slot = createSlot(registry)
+        return (
+          <Slot name="statusbar" user="lee" mode="replace">
+            <FallbackProbe />
+          </Slot>
+        )
+      },
+      { width: 40, height: 6 },
+    )
+    testSetup = setup
+
+    await testSetup.renderOnce()
+    const frame = testSetup.captureCharFrame()
+
+    expect(frame).toContain("plugin-only")
+    expect(frame).not.toContain("fallback-probe")
+    expect(fallbackLifecycle).toEqual([])
+  })
+
+  it("replace mode mounts winning plugin content once", async () => {
+    const pluginLifecycle: string[] = []
+
+    const PluginProbe = () => {
+      onMount(() => {
+        pluginLifecycle.push("mount")
+      })
+
+      onCleanup(() => {
+        pluginLifecycle.push("cleanup")
+      })
+
+      return <text>plugin-probe</text>
+    }
+
+    const { setup } = await setupSlotTest(
+      (registry) => {
+        registry.register({
+          id: "replace-plugin-probe",
+          slots: {
+            statusbar() {
+              return <PluginProbe />
+            },
+          },
+        })
+
+        const Slot = createSlot(registry)
+        return (
+          <Slot name="statusbar" user="lee" mode="replace">
+            <text>replace-fallback</text>
+          </Slot>
+        )
+      },
+      { width: 40, height: 6 },
+    )
+    testSetup = setup
+
+    await testSetup.renderOnce()
+    const frame = testSetup.captureCharFrame()
+
+    expect(frame).toContain("plugin-probe")
+    expect(frame).not.toContain("replace-fallback")
+    expect(pluginLifecycle).toEqual(["mount"])
+  })
+
   it("single_winner mode renders only the highest-priority plugin", async () => {
     const { setup } = await setupSlotTest(
       (registry) => {
@@ -335,6 +427,77 @@ describe("Solid Slot System", () => {
     const withoutPlugin = testSetup.captureCharFrame()
     expect(withoutPlugin).toContain("dynamic-fallback")
     expect(withoutPlugin).not.toContain("dynamic-plugin")
+  })
+
+  it("replace mode restores fallback content after unregistering a shared plugin across multiple slots", async () => {
+    const Node = (props: { id: string }) => {
+      return (
+        <box flexDirection="column">
+          <text>{props.id}</text>
+          <text>{`${props.id}:detail`}</text>
+        </box>
+      )
+    }
+
+    const plugin: SolidPlugin<AppSlots> = {
+      id: "toggle-pair",
+      slots: {
+        statusbar() {
+          return <Node id="plugin-status" />
+        },
+        sidebar() {
+          return <Node id="plugin-sidebar" />
+        },
+      },
+    }
+
+    const { setup, registry } = await setupSlotTest(
+      (slotRegistry) => {
+        const Slot = createSlot(slotRegistry)
+
+        return (
+          <box flexDirection="column">
+            <Slot name="statusbar" user="sam" mode="replace">
+              <Node id="fallback-status" />
+            </Slot>
+            <Slot name="sidebar" items={["one"]} mode="replace">
+              <Node id="fallback-sidebar" />
+            </Slot>
+          </box>
+        )
+      },
+      { width: 80, height: 12 },
+    )
+    testSetup = setup
+
+    const settle = async () => {
+      await testSetup.renderOnce()
+      await Bun.sleep(0)
+      await testSetup.renderOnce()
+    }
+
+    await settle()
+    let frame = testSetup.captureCharFrame()
+    expect(frame).toContain("fallback-status")
+    expect(frame).toContain("fallback-sidebar")
+    expect(frame).not.toContain("plugin-status")
+    expect(frame).not.toContain("plugin-sidebar")
+
+    const off = registry.register(plugin)
+    await settle()
+    frame = testSetup.captureCharFrame()
+    expect(frame).toContain("plugin-status")
+    expect(frame).toContain("plugin-sidebar")
+    expect(frame).not.toContain("fallback-status")
+    expect(frame).not.toContain("fallback-sidebar")
+
+    off()
+    await settle()
+    frame = testSetup.captureCharFrame()
+    expect(frame).toContain("fallback-status")
+    expect(frame).toContain("fallback-sidebar")
+    expect(frame).not.toContain("plugin-status")
+    expect(frame).not.toContain("plugin-sidebar")
   })
 
   it("switches rendered slot when props.name changes", async () => {
